@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Reflection;
 using System.Text;
 
@@ -61,5 +61,7 @@ foreach (var glyph in glyphs)
 var result = outputstr.ToString().Trim();
 Console.WriteLine(result);
 File.WriteAllText(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(file))!, Path.GetFileNameWithoutExtension(file)+".txt"), result);
+
+ocr.SaveImageData(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(file))!, Path.GetFileNameWithoutExtension(file)+"_data.png"));
 
 Console.ReadKey(true);

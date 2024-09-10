@@ -108,4 +108,23 @@ public class ReverieOCR
 
         return [.. glyphs.OrderBy(x => x.Y).ThenBy(x => x.X)];
     }
+
+    internal void SaveImageData(string filename)
+    {
+        var convertedData = ImageData.Select(x => x switch {
+            PixelInfo.EMPTY => Color.White.ToArgb(),
+            PixelInfo.SET => Color.Black.ToArgb(),
+            PixelInfo.EMPTY_PART_OF_GLYPH => Color.Orange.ToArgb(),
+            PixelInfo.SET_PART_OF_GLYPH => Color.OrangeRed.ToArgb(),
+            _ => Color.Blue.ToArgb(),
+        }).ToArray();
+
+        using var bmp = new Bitmap(ImageWidth, ImageHeight);
+        var data = bmp.LockBits(new Rectangle(0, 0, ImageWidth, ImageHeight), ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
+
+        Marshal.Copy(convertedData, 0, data.Scan0, convertedData.Length);
+
+        bmp.UnlockBits(data);
+        bmp.Save(filename);
+    }
 }
