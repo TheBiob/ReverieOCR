@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 
 namespace ReverieOCR;
 
-public class ReverieOCR
+public class ReverieOCR : IGetPixel
 {
     public enum PixelInfo {
         EMPTY = 0,
@@ -18,16 +18,17 @@ public class ReverieOCR
     public int ImageHeight {get;private set;}
     private Bitmap Bitmap {get;set;}
     private  PixelInfo[] ImageData {get;set;}
+    private int[] RawData {get;set;}
 
     public ReverieOCR(Bitmap image)
     {
         ImageWidth = image.Width;
         ImageHeight = image.Height;
         Bitmap = image;
-        ImageData = GetImageData(image);
+        (RawData, ImageData) = GetImageData(image);
     }
 
-    private static PixelInfo[] GetImageData(Bitmap image)
+    private static (int[], PixelInfo[]) GetImageData(Bitmap image)
     {
         var data = new int[image.Width*image.Height];
 
@@ -35,11 +36,15 @@ public class ReverieOCR
         Marshal.Copy(imageData.Scan0, data, 0, data.Length);
         image.UnlockBits(imageData);
 
-        return ConvertToImageData(data, image.Width, image.Height);
+        return (data, ConvertToImageData(data, image.Width, image.Height));
     } 
 
-    private static PixelInfo[] ConvertToImageData(int[] pixeldata, int _width, int _height) {
+    private static PixelInfo[] ConvertToImageData(int[] pixeldata, int width, int height) {
         return pixeldata.Select(x => (x&0xFFFFFF) > 0x800000 ? PixelInfo.SET : PixelInfo.EMPTY).ToArray();
+    }
+    private static PixelInfo[] ConvertToImageDataIntensity(int[] pixeldata, int width, int height) {
+        //(0.2126*R + 0.7152*G + 0.0722*B)
+        return pixeldata.Select(argb => ((argb&0x00FF0000)*0.2126+(argb&0x0000FF00)*0.7152+(argb&0x000000FF)*0.0722) > 0.5 ? PixelInfo.SET : PixelInfo.EMPTY).ToArray();
     }
 
     public bool GetPixel(int x, int y) {
@@ -49,9 +54,16 @@ public class ReverieOCR
         return ImageData[y*ImageWidth+x] == PixelInfo.SET;
     }
 
-    internal void MarkUsed(int x, int y)
+    public void MarkUsed(int x, int y)
     {
-        ImageData[y*ImageWidth+x] = ImageData[y*ImageWidth+x] == PixelInfo.SET ? PixelInfo.SET_PART_OF_GLYPH : PixelInfo.EMPTY_PART_OF_GLYPH;
+        if (y < 0 || y >= ImageHeight || x < 0 || x >= ImageWidth)
+        {
+            //Console.WriteLine("Position out of range {0}, {1} ({2}x{3})", x, y, ImageWidth, ImageHeight);
+        }
+        else
+        {
+            ImageData[y*ImageWidth+x] = ImageData[y*ImageWidth+x] == PixelInfo.SET ? PixelInfo.SET_PART_OF_GLYPH : PixelInfo.EMPTY_PART_OF_GLYPH;
+        }
     }
 
     internal Glyph[] GetCharacters()
@@ -61,10 +73,12 @@ public class ReverieOCR
         for (var y = 0; y < ImageHeight; y++) {
             for (var x = 0; x < ImageWidth; x++) {
                 if (GetPixel(x, y)) {
-                    var left = x == 0 ? false : GetPixel(x-1, y);
-                    var top = y == 0 ? false : GetPixel(x, y-1);
-                    var right = x == ImageWidth-1 ? false : GetPixel(x+1, y);
-                    var bottom = y == ImageHeight-1 ? false : GetPixel(x, y+1);
+                    var pixelWrapper = this;
+
+                    var left = pixelWrapper.GetPixel(x-1, y);
+                    var top = pixelWrapper.GetPixel(x, y-1);
+                    var right = pixelWrapper.GetPixel(x+1, y);
+                    var bottom = pixelWrapper.GetPixel(x, y+1);
 
                     // we are not at the top of the glyph, just continue
                     if (left || top) continue;
@@ -83,7 +97,7 @@ public class ReverieOCR
 
                     var length = 1;
                     for (; length < Glyph.GLYPH_SIZE; length++) { // todo: might crash at edge
-                        if (!GetPixel(x+xdirection*length, y+ydirection*length)) {
+                        if (!pixelWrapper.GetPixel(x+xdirection*length, y+ydirection*length)) {
                             break;
                         }
                     }
@@ -97,9 +111,9 @@ public class ReverieOCR
                     if (glyphx > ImageWidth-Glyph.GLYPH_SIZE) continue;
                     if (glyphy > ImageHeight-Glyph.GLYPH_SIZE) continue;
 
-                    var glyph = Glyph.FromImageData(this, glyphx, glyphy);
+                    var glyph = Glyph.FromImageData(pixelWrapper, glyphx, glyphy);
                     if (glyph.IsValid) {
-                        glyph.MarkUsed(this);
+                        glyph.MarkUsed(pixelWrapper);
                         glyphs.Add(glyph);
                     }
                 }
@@ -109,15 +123,21 @@ public class ReverieOCR
         return [.. glyphs.OrderBy(x => x.Y).ThenBy(x => x.X)];
     }
 
-    internal void SaveImageData(string filename)
+    internal void SaveImageData(string filename, Glyph[]? glyphs = null,
+        string fontname = "Carlito", float fontsize = 6,
+        int? colEmpty = 0,
+        int? colSet = 0xFFFFFF,
+        int? colEmptyGlyph = 0,
+        int? colSetGlyph = 0
+    )
     {
-        var convertedData = ImageData.Select(x => x switch {
-            PixelInfo.EMPTY => Color.White.ToArgb(),
-            PixelInfo.SET => Color.Black.ToArgb(),
-            PixelInfo.EMPTY_PART_OF_GLYPH => Color.Orange.ToArgb(),
-            PixelInfo.SET_PART_OF_GLYPH => Color.OrangeRed.ToArgb(),
+        var convertedData = ImageData.Select((pixel, index) => pixel switch {
+            PixelInfo.EMPTY => colEmpty,
+            PixelInfo.SET => colSet,
+            PixelInfo.EMPTY_PART_OF_GLYPH => colEmptyGlyph,
+            PixelInfo.SET_PART_OF_GLYPH => colSetGlyph,
             _ => Color.Blue.ToArgb(),
-        }).ToArray();
+        } ?? RawData[index]).ToArray();
 
         using var bmp = new Bitmap(ImageWidth, ImageHeight);
         var data = bmp.LockBits(new Rectangle(0, 0, ImageWidth, ImageHeight), ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
@@ -125,6 +145,17 @@ public class ReverieOCR
         Marshal.Copy(convertedData, 0, data.Scan0, convertedData.Length);
 
         bmp.UnlockBits(data);
+
+        if (glyphs != null) {
+            using var gfx = Graphics.FromImage(bmp);
+
+            var font = new Font(fontname, fontsize);
+            foreach (var glyph in glyphs)
+            {
+                //gfx.DrawRectangle(Pens.Red, new Rectangle(glyph.X-1, glyph.Y-1, 7, 7));
+                gfx.DrawString(glyph.Mapped, font, Brushes.White, new RectangleF(glyph.X, glyph.Y, 6, 6), new StringFormat(StringFormat.GenericTypographic) { LineAlignment = StringAlignment.Center });
+            }
+        }
         bmp.Save(filename);
     }
 }
